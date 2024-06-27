@@ -154,13 +154,13 @@ def generate_image_by_prompt(prompt, output_path, save_previews=False):
     Exception: Any exception that occurs during the operation, ensuring the websocket is closed before re-raising.
   """
   try:
-    ws, server_address, client_id = open_websocket_connection()
-    prompt_id = queue_prompt(prompt, client_id, server_address)['prompt_id']
-    track_progress(prompt, ws, prompt_id)
-    images = get_images(prompt_id, server_address, save_previews)
-    save_image(images, output_path, save_previews)
+      ws, server_address, client_id = open_websocket_connection()
+      prompt_id = queue_prompt(prompt, client_id, server_address)['prompt_id']
+      preview_images = track_progress(prompt, ws, prompt_id)
+      images = get_images(prompt_id, server_address, save_previews)
+      save_image(images, output_path, save_previews, preview_images)
   finally:
-    ws.close()
+      ws.close()
 
 def generate_image_by_prompt_and_image(prompt, output_path, input_path, filename, save_previews=False):
   """
@@ -188,9 +188,9 @@ def generate_image_by_prompt_and_image(prompt, output_path, input_path, filename
     ws, server_address, client_id = open_websocket_connection()
     upload_image(input_path, filename, server_address)
     prompt_id = queue_prompt(prompt, client_id, server_address)['prompt_id']
-    track_progress(prompt, ws, prompt_id)
+    preview_images = track_progress(prompt, ws, prompt_id)
     images = get_images(prompt_id, server_address, save_previews)
-    save_image(images, output_path, save_previews)
+    save_image(images, output_path, save_previews, preview_images)
   finally:
     ws.close()
 
@@ -213,14 +213,23 @@ def save_image(images, output_path, save_previews):
   Raises:
     Exception: Prints an error message if an image fails to be saved due to an exception.
   """
-  for itm in images:
-      directory = os.path.join(output_path, 'temp/') if itm['type'] == 'temp' and save_previews else output_path
-      os.makedirs(directory, exist_ok=True)
-      try:
-          image = Image.open(io.BytesIO(itm['image_data']))
-          image.save(os.path.join(directory, itm['file_name']))
-      except Exception as e:
-          print(f"Failed to save image {itm['file_name']}: {e}")
+  for i, preview in enumerate(preview_images):
+        directory = os.path.join(output_path, 'temp/')
+        os.makedirs(directory, exist_ok=True)
+        try:
+            image = Image.open(io.BytesIO(preview))
+            image.save(os.path.join(directory, f'preview_{i}.png'))
+        except Exception as e:
+            print(f"Failed to save preview image {i}: {e}")
+
+    for itm in images:
+        directory = os.path.join(output_path, 'temp/') if itm['type'] == 'temp' and save_previews else output_path
+        os.makedirs(directory, exist_ok=True)
+        try:
+            image = Image.open(io.BytesIO(itm['image_data']))
+            image.save(os.path.join(directory, itm['file_name']))
+        except Exception as e:
+            print(f"Failed to save image {itm['file_name']}: {e}")
 
 def track_progress(prompt, ws, prompt_id):
   """
@@ -242,34 +251,36 @@ def track_progress(prompt, ws, prompt_id):
     types indicating the nature of the progress update. Binary messages are ignored.
   """
   node_ids = list(prompt.keys())
-  finished_nodes = []
+    finished_nodes = []
+    preview_images = []
 
-  while True:
-      out = ws.recv()
-      if isinstance(out, str):
-          message = json.loads(out)
-          if message['type'] == 'progress':
-              data = message['data']
-              current_step = data['value']
-              print('In K-Sampler -> Step: ', current_step, ' of: ', data['max'])
-          if message['type'] == 'execution_cached':
-              data = message['data']
-              for itm in data['nodes']:
-                  if itm not in finished_nodes:
-                      finished_nodes.append(itm)
-                      print('Progess: ', len(finished_nodes), '/', len(node_ids), ' Tasks done')
-          if message['type'] == 'executing':
-              data = message['data']
-              if data['node'] not in finished_nodes:
-                  finished_nodes.append(data['node'])
-                  print('Progess: ', len(finished_nodes), '/', len(node_ids), ' Tasks done')
+    while True:
+        out = ws.recv()
+        if isinstance(out, str):
+            message = json.loads(out)
+            if message['type'] == 'progress':
+                data = message['data']
+                current_step = data['value']
+                print('In K-Sampler -> Step: ', current_step, ' of: ', data['max'])
+            elif message['type'] == 'execution_cached':
+                data = message['data']
+                for itm in data['nodes']:
+                    if itm not in finished_nodes:
+                        finished_nodes.append(itm)
+                        print('Progress: ', len(finished_nodes), '/', len(node_ids), ' Tasks done')
+            elif message['type'] == 'executing':
+                data = message['data']
+                if data['node'] not in finished_nodes:
+                    finished_nodes.append(data['node'])
+                    print('Progress: ', len(finished_nodes), '/', len(node_ids), ' Tasks done')
 
+                if data['node'] is None and data['prompt_id'] == prompt_id:
+                    break  # Execution is done
+        else:
+            # Binary data (preview image)
+            preview_images.append(out)
 
-              if data['node'] is None and data['prompt_id'] == prompt_id:
-                  break #Execution is done
-      else:
-          continue
-  return
+    return preview_images
 
 def get_images(prompt_id, server_address, allow_preview = False):
   """
